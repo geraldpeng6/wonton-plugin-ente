@@ -8,20 +8,42 @@
 # 配置，注册页在网关后面只有主人打得开）固定为 123456，邮箱用 @example.org 结尾。
 #
 # CLI 二进制按 ente/ente 的 ente-cli-v* 最新正式发布下载并按 SHA256SUMS 校验，缓存和
-# CLI 的数据目录（vault）都放在 $SMOKE_STATE 下。命令在插件网络里的一次性 alpine 容器里
-# 运行：探针在宿主机上，museum 的网络从外面到不了。
+# CLI 的数据目录（vault）放在状态目录旁边。命令在插件网络里的一次性 alpine 容器里运行：
+# 探针在宿主机上，museum 的网络从外面到不了。
+#
+# 两套 harness：dev 套件（scripts/probes.sh）给 SMOKE_*，e2e（smoke.sh + plugins/ente.sh）
+# 给 E2E_*。下面把两套名字归一化；SMOKE_STATE 在 dev 是 .wonton 目录，在 e2e 是一个
+# 每次 run 被截空的文件，所以标记和缓存放它旁边的目录，并在标记里记实例名——实例对不上
+# （e2e 每次随机新实例、dev 换了栈）就整个重建，不拿旧实例的账号。
 
+if [[ -n "${E2E_INSTANCE:-}" && -z "${SMOKE_INSTANCE:-}" ]]; then
+	SMOKE_INSTANCE="$E2E_INSTANCE"
+	SMOKE_SLUG="${E2E_SLUG:-}"
+fi
+SMOKE_INSTANCE="${SMOKE_INSTANCE:-}"
+SMOKE_SLUG="${SMOKE_SLUG:-${SMOKE_PLUGIN_ID//./-}}"
+SMOKE_NOTE="ente 账号与云吞身份独立（端到端加密，sso=none）；探测账号由官方 CLI 经 museum 注册并断言它是实例管理员"
+E2E_NOTE="$SMOKE_NOTE"
+
+state_dir() { # 状态旁边建一个自己的目录：SMOKE_STATE 是文件（e2e）时用 <路径>.ente
+	if [[ -d "${SMOKE_STATE:-}" ]]; then
+		printf '%s' "$SMOKE_STATE/ente"
+	else
+		printf '%s' "${SMOKE_STATE:-/tmp/ente-smoke}.ente"
+	fi
+}
+ENTE_STATE="$(state_dir)"
+ENTE_PROBE_DIR="$ENTE_STATE/probe"
+ENTE_CLI_DIR="$ENTE_STATE/cli"
+ENTE_MARKER_FILE="$ENTE_PROBE_DIR/marker.env"
 ENTE_OTP=123456
 ENTE_API="http://museum:8080"
-ENTE_PROBE_DIR="${SMOKE_STATE:-/tmp}/ente-probe"
-ENTE_MARKER_FILE="$ENTE_PROBE_DIR/marker.env"
-ENTE_CLI_DIR="${SMOKE_STATE:-/tmp}/ente-cli"
 
 web_assert() { grep -qi 'ente photos'; }   # 标准输入：应用真实页面（<title>）
 
 # —— ente CLI 助手 ——
 
-cli_ensure() { # 把 CLI 下载并校验好（缓存在 $SMOKE_STATE/ente-cli，挂进容器就能跑）
+cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容器就能跑）
 	local arch tag url
 	if [[ ! -x "$ENTE_CLI_DIR/ente" ]]; then
 		case "$(uname -m)" in
@@ -70,18 +92,23 @@ ente_cli() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
 		--entrypoint /cli/ente alpine:3.20 "$@"
 }
 
-marker_read() { # 读标记（MARKER、EMAIL、PASSWORD），没有就返回 1
+marker_read() { # 读标记（INSTANCE、MARKER、EMAIL、PASSWORD），没有或实例对不上就返回 1
 	[[ -f "$ENTE_MARKER_FILE" ]] || return 1
 	local line
 	while IFS= read -r line; do
 		case "$line" in
-		MARKER=* | EMAIL=* | PASSWORD=*) eval "$line" ;;
+		INSTANCE=* | MARKER=* | EMAIL=* | PASSWORD=*) eval "$line" ;;
 		esac
 	done < "$ENTE_MARKER_FILE"
-	[[ -n "${MARKER:-}" && -n "${EMAIL:-}" && -n "${PASSWORD:-}" ]]
+	[[ -n "${INSTANCE:-}" && -n "${MARKER:-}" && -n "${EMAIL:-}" && -n "${PASSWORD:-}" ]] || return 1
+	# 实例对不上（e2e 每次随机新实例，dev 换了栈）就重建，别拿旧实例的账号
+	if [[ "$INSTANCE" != "$SMOKE_INSTANCE" ]]; then
+		rm -rf "$ENTE_STATE"
+		return 1
+	fi
 }
 
-ensure_account() { # 注册探测账号（幂等）：邮箱带随机标记，凭据存进 $SMOKE_STATE
+ensure_account() { # 注册探测账号（幂等）：邮箱带随机标记，凭据和实例名存进标记文件
 	local marker email password json out
 	if marker_read; then
 		return 0
@@ -96,8 +123,8 @@ ensure_account() { # 注册探测账号（幂等）：邮箱带随机标记，�
 	out="$(printf '%s' "$json" | ente_cli account create --account probe --app photos \
 		--host "$ENTE_API" --input - --accept-terms --no-input 2>&1)" ||
 		{ echo "创建账号失败：$out"; return 1; }
-	(umask 077 && printf 'MARKER=%s\nEMAIL=%s\nPASSWORD=%s\n' \
-		"$marker" "$email" "$password" > "$ENTE_MARKER_FILE")
+	(umask 077 && printf 'INSTANCE=%s\nMARKER=%s\nEMAIL=%s\nPASSWORD=%s\n' \
+		"$SMOKE_INSTANCE" "$marker" "$email" "$password" > "$ENTE_MARKER_FILE")
 }
 
 # —— 探测项 ——
