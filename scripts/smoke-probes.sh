@@ -69,9 +69,14 @@ cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容
 	fi
 }
 
-cli_net() { # 插件网络名：从 museum 容器上读
+cli_net() { # 插件网络名：从 museum 容器上读。slug/实例在调用时才取（e2e 在 source 钩子之后才注入）
+	local slug instance
+	slug="${SMOKE_SLUG:-${E2E_SLUG:-${SMOKE_PLUGIN_ID:-}}}"
+	instance="${SMOKE_INSTANCE:-${E2E_INSTANCE:-}}"
+	[[ -n "$slug" && -n "$instance" ]] ||
+		{ echo "拿不到插件 slug 或实例名（SMOKE_SLUG/E2E_SLUG、SMOKE_INSTANCE/E2E_INSTANCE 都没设）"; return 1; }
 	docker inspect -f '{{range $k, $_ := .NetworkSettings.Networks}}{{$k}}{{end}}' \
-		"wonton-$SMOKE_INSTANCE--$SMOKE_SLUG--museum" 2>/dev/null
+		"wonton-$instance--$slug--museum" 2>/dev/null
 }
 
 ente_cli() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
