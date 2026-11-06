@@ -210,7 +210,7 @@ x-wonton:
   description: { zh: "端到端加密的相册，手机照片自动备份到自己家里", en: "End-to-end encrypted photo storage that backs up your phone to your own server" }
   icon: icon.png
   notices: [NOTICE]
-  screenshots: [screenshots/gallery.png]
+  screenshots: [screenshots/gallery.jpg, screenshots/viewer.jpg]
   author: { name: geraldpeng6 }
   homepage: https://ente.com
   # Ente（服务端 museum 和网页应用）的许可证；插件包自己的许可证在 LICENSE。
