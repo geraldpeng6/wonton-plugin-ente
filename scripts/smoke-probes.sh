@@ -21,7 +21,7 @@ if [[ -n "${E2E_INSTANCE:-}" && -z "${SMOKE_INSTANCE:-}" ]]; then
 	SMOKE_SLUG="${E2E_SLUG:-}"
 fi
 SMOKE_INSTANCE="${SMOKE_INSTANCE:-}"
-SMOKE_SLUG="${SMOKE_SLUG:-${SMOKE_PLUGIN_ID//./-}}"
+SMOKE_SLUG="${SMOKE_SLUG:-${SMOKE_PLUGIN_ID:-}}"
 SMOKE_NOTE="ente 账号与云吞身份独立（端到端加密，sso=none）；探测账号由官方 CLI 经 museum 注册并断言它是实例管理员"
 E2E_NOTE="$SMOKE_NOTE"
 
