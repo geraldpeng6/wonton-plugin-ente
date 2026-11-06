@@ -13,3 +13,5 @@ permissions:
 jobs:
   check:
     uses: ./.github/workflows/plugin-check.yml
+
+# 仓库建好后 GitHub 没登记工作流，动一下文件触发重新登记。
