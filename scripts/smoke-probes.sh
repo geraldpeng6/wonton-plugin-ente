@@ -130,7 +130,6 @@ ensure_account() { # 注册探测账号（幂等）：邮箱带随机标记，�
 # —— 探测项 ——
 
 # 身份：探测账号在实例里注册成功、能登录，并且是实例管理员（一次性实例的第一个账号）。
-SMOKE_NOTE="ente 账号与云吞身份独立（端到端加密，sso=none）；探测账号由官方 CLI 经 museum 注册并断言它是实例管理员"
 identity_check() {
 	ensure_account || return 1
 	marker_read || { echo "标记文件读不出来"; return 1; }
@@ -141,7 +140,7 @@ identity_check() {
 }
 
 # 写数据：探测账号本身就是保的数据——邮箱里的随机标记是标记，SRP 参数和密钥材料在
-# 实例的 Postgres 里。凭据存进 $SMOKE_STATE，data_check 靠它重新登录。
+# 实例的 Postgres 里。凭据存进标记文件，data_check 靠它重新登录。
 data_write() {
 	ensure_account || return 1
 	marker_read || { echo "标记文件写不进去"; return 1; }
