@@ -44,7 +44,7 @@ web_assert() { grep -qi 'ente photos'; }   # 标准输入：应用真实页面�
 # —— ente CLI 助手 ——
 
 cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容器就能跑）
-	local arch tag base file
+	local arch tag base file line
 	if [[ ! -x "$ENTE_CLI_DIR/ente" ]]; then
 		case "$(uname -m)" in
 		x86_64) arch=amd64 ;;
@@ -63,7 +63,10 @@ cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容
 		[[ -n "$file" ]] || { echo "SHA256SUMS 里没有 linux-$arch 的包：$tag"; return 1; }
 		curl -fsSL --retry 3 -o "$ENTE_CLI_DIR/$file" "$base/$file" ||
 			{ echo "下载 CLI 失败：$base/$file"; return 1; }
-		(cd "$ENTE_CLI_DIR" && grep -F "  $file" SHA256SUMS | sha256sum -c --status -) ||
+		# 清单里取这一行整行（第 2 字段精确相等：子串匹配会捞到以后加的 .asc 之类同名条目）。
+		line="$(awk -v f="$file" '$2 == f' "$ENTE_CLI_DIR/SHA256SUMS")"
+		[[ -n "$line" ]] || { echo "SHA256SUMS 里没有 $file 这一行：$tag"; return 1; }
+		(cd "$ENTE_CLI_DIR" && printf '%s\n' "$line" | sha256sum -c --status -) ||
 			{ echo "CLI 的 sha256 对不上：$tag"; return 1; }
 		tar -xzf "$ENTE_CLI_DIR/$file" -C "$ENTE_CLI_DIR" ente &&
 			chmod +x "$ENTE_CLI_DIR/ente" && rm -f "$ENTE_CLI_DIR/$file" "$ENTE_CLI_DIR/SHA256SUMS"
