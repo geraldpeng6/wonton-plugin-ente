@@ -44,7 +44,7 @@ web_assert() { grep -qi 'ente photos'; }   # 标准输入：应用真实页面�
 # —— ente CLI 助手 ——
 
 cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容器就能跑）
-	local arch tag url
+	local arch tag base file
 	if [[ ! -x "$ENTE_CLI_DIR/ente" ]]; then
 		case "$(uname -m)" in
 		x86_64) arch=amd64 ;;
@@ -55,17 +55,18 @@ cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容
 		tag="$(git ls-remote --tags --refs https://github.com/ente/ente 'ente-cli-v*' |
 			awk -F/ '{print $NF}' | sort -V | tail -1)"
 		[[ -n "$tag" ]] || { echo "列不出 ente-cli 的发布 tag（需要能访问 github.com）"; return 1; }
-		url="https://github.com/ente/ente/releases/download/$tag/ente-cli-$tag-linux-$arch.tar.gz"
-		curl -fsSL --retry 3 -o "$ENTE_CLI_DIR/cli.tar.gz" "$url" ||
-			{ echo "下载 CLI 失败：$url"; return 1; }
-		curl -fsSL --retry 3 -o "$ENTE_CLI_DIR/SHA256SUMS" \
-			"https://github.com/ente/ente/releases/download/$tag/SHA256SUMS" ||
+		base="https://github.com/ente/ente/releases/download/$tag"
+		curl -fsSL --retry 3 -o "$ENTE_CLI_DIR/SHA256SUMS" "$base/SHA256SUMS" ||
 			{ echo "下载 SHA256SUMS 失败：$tag"; return 1; }
-		(cd "$ENTE_CLI_DIR" &&
-			grep "ente-cli-$tag-linux-$arch.tar.gz" SHA256SUMS | sha256sum -c --status -) ||
+		# 资产名不跟 tag 一致（0.4.0 起是 ente-v…，0.4.1 起是 ente-cli-v…），按校验清单里的 linux 资产取名字，不自己拼。
+		file="$(awk -v a="$arch" '$2 ~ ("linux-" a "\\.tar\\.gz$") { print $2; exit }' "$ENTE_CLI_DIR/SHA256SUMS")"
+		[[ -n "$file" ]] || { echo "SHA256SUMS 里没有 linux-$arch 的包：$tag"; return 1; }
+		curl -fsSL --retry 3 -o "$ENTE_CLI_DIR/$file" "$base/$file" ||
+			{ echo "下载 CLI 失败：$base/$file"; return 1; }
+		(cd "$ENTE_CLI_DIR" && grep -F "  $file" SHA256SUMS | sha256sum -c --status -) ||
 			{ echo "CLI 的 sha256 对不上：$tag"; return 1; }
-		tar -xzf "$ENTE_CLI_DIR/cli.tar.gz" -C "$ENTE_CLI_DIR" ente &&
-			chmod +x "$ENTE_CLI_DIR/ente" && rm -f "$ENTE_CLI_DIR/cli.tar.gz" "$ENTE_CLI_DIR/SHA256SUMS"
+		tar -xzf "$ENTE_CLI_DIR/$file" -C "$ENTE_CLI_DIR" ente &&
+			chmod +x "$ENTE_CLI_DIR/ente" && rm -f "$ENTE_CLI_DIR/$file" "$ENTE_CLI_DIR/SHA256SUMS"
 	fi
 }
 
