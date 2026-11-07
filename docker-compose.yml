@@ -265,5 +265,8 @@ x-wonton:
       generate: { bytes: 32, encoding: base64 }
     museum_hash:
       generate: { bytes: 64, encoding: base64 }
+    # museum 按 URL-safe base64 解 jwt.secret（main.go 的 b64.URLEncoding），核心的 base64 是标准表，
+    # 带 + 或 / 时解不开（约 3/4 的值带）。hex 全在 base64 字母表里、长度是 4 的倍数，解出来 48 字节。
+    # key.encryption / key.hash 用的是 StdEncoding，照旧用 base64。
     jwt_secret:
-      generate: { bytes: 32, encoding: base64 }
+      generate: { bytes: 32 }
