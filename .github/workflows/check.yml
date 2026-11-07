@@ -12,6 +12,4 @@ permissions:
 
 jobs:
   check:
-    uses: ./.github/workflows/plugin-check.yml
-
-# 仓库建好后 GitHub 没登记工作流，动一下文件触发重新登记。
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@dc5b59f02b09c3740b4df66ae1d0a506e27f08c7
