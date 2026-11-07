@@ -8,8 +8,8 @@
 # 配置，注册页在网关后面只有主人打得开）固定为 123456，邮箱用 @example.org 结尾。
 #
 # CLI 二进制按 ente/ente 的 ente-cli-v* 最新正式发布下载并按 SHA256SUMS 校验，缓存和
-# CLI 的数据目录（vault）放在状态目录旁边。命令在插件网络里的一次性 alpine 容器里运行：
-# 探针在宿主机上，museum 的网络从外面到不了。
+# CLI 的数据目录（vault）放在状态目录旁边。探针在宿主机上，museum 的网络从外面到不了，
+# 所以命令放进插件网络里的一次性容器里跑，镜像取栈里 museum 在用的那个（本地已有，不额外拉）。
 #
 # 两套 harness：dev 套件（scripts/probes.sh）给 SMOKE_*，e2e（smoke.sh + plugins/ente.sh）
 # 给 E2E_*。下面把两套名字归一化；SMOKE_STATE 在 dev 是 .wonton 目录，在 e2e 是一个
@@ -80,22 +80,44 @@ cli_net() { # 插件网络名：从 museum 容器上读。slug/实例在调用�
 		"wonton-$instance--$slug--museum" 2>/dev/null
 }
 
-ente_cli() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
-	local net
-	cli_ensure || return 1
+cli_image() { # 跑 CLI 的镜像：直接用栈里已经在跑的那个（本地已有，不用再拉；entrypoint 会被 /cli/ente 盖掉）
+	local slug instance
+	slug="${SMOKE_SLUG:-${E2E_SLUG:-${SMOKE_PLUGIN_ID:-}}}"
+	instance="${SMOKE_INSTANCE:-${E2E_INSTANCE:-}}"
+	docker inspect -f '{{.Config.Image}}' "wonton-$instance--$slug--museum" 2>/dev/null
+}
+
+cli_run() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
+	local net image key=()
 	net="$(cli_net)" || { echo "找不到插件网络（museum 容器不在运行？）"; return 1; }
+	image="$(cli_image)"
+	[[ -n "$image" ]] || { echo "读不出 museum 容器的镜像"; return 1; }
+	mkdir -p "$ENTE_PROBE_DIR" && chmod 700 "$ENTE_PROBE_DIR"
+	# ENTE_CLI_VAULT_KEY 要的是密钥本身，不是路径；还没有（第一次生成）时不带。
+	[[ ! -s "$ENTE_PROBE_DIR/vault-key" ]] || key=(-e "ENTE_CLI_VAULT_KEY=$(cat "$ENTE_PROBE_DIR/vault-key")")
+	# 插件网络里没有代理，容器外面的 http_proxy 会让 CLI 绕到不存在的回环地址上（502）。
+	docker run --rm -i --network "$net" \
+		-v "$ENTE_PROBE_DIR:/probe" -v "$ENTE_CLI_DIR:/cli:ro" \
+		-e ENTE_CLI_HOME=/probe/home "${key[@]}" \
+		-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e NO_PROXY='*' \
+		--entrypoint /cli/ente "$image" "$@"
+}
+
+ente_cli() { # 确保 CLI 就位后再跑：vault key 只在第一次生成
+	# 标准输入先读完：cli_ensure、vault key 那几步会把管道里的 --input - 输入吃光。
+	local input=""
+	[[ -t 0 ]] || input="$(cat)"
+	cli_ensure || return 1
 	mkdir -p "$ENTE_PROBE_DIR" && chmod 700 "$ENTE_PROBE_DIR"
 	if [[ ! -s "$ENTE_PROBE_DIR/vault-key" ]]; then
-		(umask 077 && docker run --rm --network "$net" \
-			-v "$ENTE_PROBE_DIR:/probe" -v "$ENTE_CLI_DIR:/cli:ro" \
-			-e ENTE_CLI_HOME=/probe/home -e ENTE_CLI_VAULT_KEY=/probe/vault-key \
-			--entrypoint /cli/ente alpine:3.20 vault key generate > "$ENTE_PROBE_DIR/vault-key") ||
+		(umask 077 && cli_run vault key generate > "$ENTE_PROBE_DIR/vault-key") ||
 			{ echo "生成 vault key 失败"; return 1; }
 	fi
-	docker run --rm --network "$net" \
-		-v "$ENTE_PROBE_DIR:/probe" -v "$ENTE_CLI_DIR:/cli:ro" \
-		-e ENTE_CLI_HOME=/probe/home -e ENTE_CLI_VAULT_KEY=/probe/vault-key \
-		--entrypoint /cli/ente alpine:3.20 "$@"
+	if [[ -n "$input" ]]; then
+		printf '%s' "$input" | cli_run "$@"
+	else
+		cli_run "$@"
+	fi
 }
 
 marker_read() { # 读标记（INSTANCE、MARKER、EMAIL、PASSWORD），没有或实例对不上就返回 1
@@ -153,13 +175,17 @@ data_write() {
 }
 
 # 查数据：用保存的凭据重新登录（先忘掉本地，SRP 校验完全走实例数据库里的账号数据），
-# 登录后的账号邮箱必须还是标记里的那个。
+# 登录后的账号邮箱必须还是标记里的那个。非交互登录要带验证码，按 hardcoded-ott 固定值来。
 data_check() {
 	local json out
 	marker_read || { echo "标记文件不见了（data_write 没跑过？）"; return 1; }
-	json="$(jq -nc --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}')"
 	out="$(ente_cli account logout --local --no-input 2>&1)" ||
 		{ echo "logout 失败：$out"; return 1; }
+	out="$(ente_cli account request-otp --email "$EMAIL" --app photos --purpose login \
+		--host "$ENTE_API" 2>&1)" ||
+		{ echo "request-otp 失败：$out"; return 1; }
+	json="$(jq -nc --arg e "$EMAIL" --arg p "$PASSWORD" --arg o "$ENTE_OTP" \
+		'{email:$e,password:$p,otp:$o}')"
 	out="$(printf '%s' "$json" | ente_cli account login --account probe --app photos \
 		--host "$ENTE_API" --input - --no-input 2>&1)" ||
 		{ echo "重新登录失败（升级/重装后账号数据丢了？）：$out"; return 1; }
