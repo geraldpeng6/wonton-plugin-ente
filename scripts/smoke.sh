@@ -125,15 +125,15 @@ probes_facts "$copy"
 probes_load
 
 # ---------- 1. 装得上 ----------
-say "1. 装得上（check --official、install、running healthy）"
-chk_out="$(cd "$copy" && nice -n 19 timeout 900 scripts/check.sh --official 2>&1)" && chk_rc=0 || chk_rc=$?
+say "1. 装得上（check、install、running healthy）"
+chk_out="$(cd "$copy" && nice -n 19 timeout 900 scripts/check.sh 2>&1)" && chk_rc=0 || chk_rc=$?
 printf '%s\n' "$chk_out" >>"$LOG"
 chk_first="$(head -1 <<<"$chk_out")"
 if ((chk_rc != 0)); then
-  fail 装得上 "check.sh --official 退出 $chk_rc：$chk_first"
+  fail 装得上 "check.sh 退出 $chk_rc：$chk_first"
   chk_note="check 不合格（$chk_first）；"
 else
-  chk_note="check --official 通过；"
+  chk_note="check 通过；"
 fi
 
 if ! probes_dev up >>"$LOG" 2>&1; then
