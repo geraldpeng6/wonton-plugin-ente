@@ -99,8 +99,9 @@ cli_run() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
 	# ENTE_CLI_VAULT_KEY 要的是密钥本身，不是路径；还没有（第一次生成）时不带。
 	[[ ! -s "$ENTE_PROBE_DIR/vault-key" ]] || key=(-e "ENTE_CLI_VAULT_KEY=$(cat "$ENTE_PROBE_DIR/vault-key")")
 	# 插件网络里没有代理，容器外面的 http_proxy 会让 CLI 绕到不存在的回环地址上（502）。
-	# 固定以 root 跑：/probe 是宿主 700 的挂载点，museum 镜像哪天换了非 root 的 USER 也不会 EACCES。
-	docker run --rm -i --user 0:0 --network "$net" \
+	# 用宿主自己的 uid/gid 跑：/probe 是宿主 700 的目录，同 uid 才读写得了；镜像自带什么 USER 都被覆盖。
+	# 别用 root：容器留下的 root 属主文件，宿主重建探测目录时 rm -rf 删不掉（e2e 第二轮就死在这）。
+	docker run --rm -i --user "$(id -u):$(id -g)" --network "$net" \
 		-v "$ENTE_PROBE_DIR:/probe" -v "$ENTE_CLI_DIR:/cli:ro" \
 		-e ENTE_CLI_HOME=/probe/home "${key[@]}" \
 		-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e NO_PROXY='*' \
