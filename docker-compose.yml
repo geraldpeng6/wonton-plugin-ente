@@ -1,78 +1,272 @@
-# 示例插件：nginx 显示一个网页，向登录的人问好。改成自己的应用见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#写插件。
+# Ente 相册插件：端到端加密相册。museum（API 服务器）+ Postgres + MinIO 对象存储 +
+# Ente Photos 网页应用，全部用上游官方镜像（或上游 quickstart/compose 自带的镜像）。
+#
+# 登录用 Ente 自己的账号（sso: none）：云吞网关挡在外面，只有主人打得开注册页；账号的
+# 密码就是端到端加密的根（SRP 登录 + 主密钥用密码包裹），Ente 不支持 OIDC 或反代头代登录，
+# 所以不能换成云吞的身份。注册流程和验证码的来历见 README 的"注册"一节。
+#
+# 网页入口是 proxy（nginx）：同一个源上，/ 走 Ente 网页应用，/api/ 走 museum，
+# 对象存储的预签名请求（/桶名/对象）走 MinIO。Ente 网页应用打包时写死了 API 地址，
+# 容器启动时由镜像自带的脚本把 ENTE_API_ORIGIN 替换成 ${WONTON_APP_URL}/api，
+# 浏览器所有请求（页面、API、对象存储）都在同一个源上，不需要 CORS。
+#
+# 对象存储的地址：museum 按自己的 endpoint（minio:3200）签名并把它交给客户端；museum 自己
+# 的对象操作直接访问这个地址（Docker 网络里的服务名）。浏览器拿到的 URL 里的主机是容器网络
+# 里的名字，到不了浏览器，所以 proxy 把响应体里的 "http://minio:3200" 前缀改写成相对路径
+# （浏览器按当前源访问），请求到达 MinIO 前再把 Host 还原成签名用的 minio:3200——签名校验
+# 两边一致。浏览器直传（预签名 PUT）和 v3 下载（预签名 GET）都走这条路。
 services:
-  web:
-    # 镜像按摘要固定（多架构镜像写清单列表的摘要），标签只给人看。
-    image: nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
-    environment:
-      # 网关代登录：SSI 回显的 Remote-User 只信核心带来的。官方镜像启动时对 templates 目录里的
-      # *.template 做 envsubst，把下面的地址换进 nginx 配置（见 web/default.conf.template）。
-      WONTON_CORE_ADDRESS: ${WONTON_CORE_ADDRESS}
-    # 包里的文件经 configs 交给容器（核心在启动前写进去），不能用卷挂载。
+  proxy:
+    image: nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
     configs:
-      - source: site
-        target: /etc/nginx/templates/default.conf.template
-      - source: page
-        target: /usr/share/nginx/html/index.html
-      - source: tokens
-        target: /usr/share/nginx/html/tokens.css
+      # 覆盖镜像自带的 default.conf：按路径分三路（见文件头注释）。
+      - source: proxy-conf
+        target: /etc/nginx/conf.d/default.conf
+    depends_on:
+      museum:
+        condition: service_healthy
+      web:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      # 网页和 API 都真实可答：静态首页 200，museum 的 /ping 回 pong。
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ && wget -q -O - http://127.0.0.1/api/ping | grep -q pong"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
-      start_interval: 1s
+      retries: 5
+      start_period: 1m
+      start_interval: 2s
+
+  web:
+    # Ente Photos 网页应用（静态导出，nginx 伺服；license: AGPL-3.0-only）。
+    # ghcr.io/ente/web 按周从 main 构建，只有 latest 和提交号两种 tag，没有版本号。
+    image: ghcr.io/ente/web:latest@sha256:795e2190489b773c9548f0d8b60350476a0c90ad7c8d4e9e8289c61aed81e3c0
+    environment:
+      # 镜像入口脚本在启动时把它替换进 JS：网页从同源的 /api/ 调 museum（经 proxy 转发）。
+      ENTE_API_ORIGIN: ${WONTON_APP_URL}/api
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 1m
+      start_interval: 2s
+
+  museum:
+    # Ente 的 API 服务器（license: AGPL-3.0-only）。ghcr.io/ente/server 每月从生产部署的
+    # 提交构建，只有 latest 和提交号两种 tag，没有版本号。
+    image: ghcr.io/ente/server:latest@sha256:c59a19e16626a4fc3e9231c9a11c6fca0b342ba464c9b879635f549b977369fb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    configs:
+      - source: museum-config
+        target: /museum.yaml
+    healthcheck:
+      # 上游 quickstart 同款：查 /ping 真实可答。
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 2m
+      start_interval: 5s
+
+  # 一次性服务：建 museum 要用的三个桶（b2-eu-cen、wasabi-eu-central-2-v3、scw-eu-fr-v3，
+  # 名字是 museum 写死的；复制关闭时只用第一个）。mc mb -p 对已存在的桶不动，重复运行安全。
+  minio-init:
+    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z@sha256:2636fc4155d9a7e41ff58cdb65ddd13ba9304e67184e13c25bc5cb34016269d7
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set h0 http://minio:3200 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb -p h0/b2-eu-cen h0/wasabi-eu-central-2-v3 h0/scw-eu-fr-v3
+    environment:
+      MINIO_ROOT_USER: ${WONTON_SECRET_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${WONTON_SECRET_MINIO_PASSWORD}
+      # mc 的配置写在容器文件系统里；只读根 + tmpfs。
+      MC_CONFIG_DIR: /tmp/.mc
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  minio:
+    # Ente quickstart 和官方 config/compose 自带的对象存储镜像（MinIO 的发行版，含 mc；
+    # license: AGPL-3.0-only）。上游没有自己的存储镜像，文档推荐的就是它。
+    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z@sha256:2636fc4155d9a7e41ff58cdb65ddd13ba9304e67184e13c25bc5cb34016269d7
+    command: server /data --address ":3200" --console-address ":3201"
+    environment:
+      MINIO_ROOT_USER: ${WONTON_SECRET_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${WONTON_SECRET_MINIO_PASSWORD}
+    volumes:
+      # 照片在这里是端到端加密后的对象，museum 和数据库都读不出内容；放插件数据目录。
+      - ${WONTON_APP_DATA}/minio:/data
+    healthcheck:
+      # MinIO 的存活端点（镜像里有 curl；mc ready local 固定指向 9000 端口，不适用）。
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3200/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 1m
+      start_interval: 2s
+
+  postgres:
+    # Ente 官方 config/compose 固定的 postgres 版本（license: PostgreSQL License）。
+    image: postgres:15-trixie@sha256:1aac5b49cefd627f02816141ca4ad012d6cc19460dfe02a9b5168a105be3fc53
+    environment:
+      POSTGRES_USER: ${WONTON_SECRET_DB_USERNAME}
+      POSTGRES_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
+      POSTGRES_DB: ente_db
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      # 数据库放插件数据目录。
+      - ${WONTON_APP_DATA}/postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-d", "ente_db", "-U", "${WONTON_SECRET_DB_USERNAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 1m
+      start_interval: 2s
 
 configs:
-  site:
-    file: web/default.conf.template
-  page:
-    file: web/index.html
-  tokens:
-    file: web/tokens.css
+  proxy-conf:
+    file: web/default.conf
+  museum-config:
+    # museum 的配置。db 和 s3 的密钥是核心生成的插件密钥，安装时插值；museum 每次读这个文件。
+    content: |
+      db:
+        host: postgres
+        port: 5432
+        name: ente_db
+        user: ${WONTON_SECRET_DB_USERNAME}
+        password: ${WONTON_SECRET_DB_PASSWORD}
+
+      s3:
+        are_local_buckets: true
+        use_path_style_urls: true
+        b2-eu-cen:
+          key: ${WONTON_SECRET_MINIO_USER}
+          secret: ${WONTON_SECRET_MINIO_PASSWORD}
+          endpoint: minio:3200
+          region: eu-central-2
+          bucket: b2-eu-cen
+        wasabi-eu-central-2-v3:
+          key: ${WONTON_SECRET_MINIO_USER}
+          secret: ${WONTON_SECRET_MINIO_PASSWORD}
+          endpoint: minio:3200
+          region: eu-central-2
+          bucket: wasabi-eu-central-2-v3
+          compliance: false
+        scw-eu-fr-v3:
+          key: ${WONTON_SECRET_MINIO_USER}
+          secret: ${WONTON_SECRET_MINIO_PASSWORD}
+          endpoint: minio:3200
+          region: eu-central-2
+          bucket: scw-eu-fr-v3
+
+      # 各个网页应用的基地址，museum 生成分享链接等场合用。插件只开放 Photos 这一个网页
+      # 入口，公开相册页没法一起提供（见 README），指到插件网页，不指向 Ente 官方站点。
+      apps:
+        public-albums: ${WONTON_APP_URL}
+        embed-albums: ${WONTON_APP_URL}
+        photobook: ${WONTON_APP_URL}
+        public-locker: ${WONTON_APP_URL}
+        public-paste: ${WONTON_APP_URL}
+        cast: ${WONTON_APP_URL}
+        accounts: ${WONTON_APP_URL}
+        public-memories: ${WONTON_APP_URL}
+
+      # 自托管没有配 SMTP：注册、找回这类流程的验证码按上游开发环境的做法固定
+      # （@example.org 结尾的邮箱用 123456）。注册页在云吞网关后面，只有主人打得开。
+      internal:
+        hardcoded-ott:
+          local-domain-suffix: "@example.org"
+          local-domain-value: "123456"
+
+      key:
+        encryption: ${WONTON_SECRET_MUSEUM_KEY}
+        hash: ${WONTON_SECRET_MUSEUM_HASH}
+
+      jwt:
+        secret: ${WONTON_SECRET_JWT_SECRET}
 
 x-wonton:
-  spec: "0.5"
-  # 换成你自己的：反向域名形式，装上以后不能改。
-  id: app.example.hello
-  version: 0.1.1
+  spec: "0.6"
+  id: app.ente.ente
+  version: 0.1.0
   kind: app
-  title: { zh: 你好, en: Hello }
-  description: { zh: 向登录的人问好的示例网页, en: An example page that greets whoever is signed in }
-  icon: icon.svg
+  title: { en: Ente }
+  description: { zh: "端到端加密的相册，手机照片自动备份到自己家里", en: "End-to-end encrypted photo storage that backs up your phone to your own server" }
+  icon: icon.png
   notices: [NOTICE]
-  screenshots: [screenshots/home.png]
-  author: { name: Example }
-  homepage: https://nginx.org
-  # 应用（这里是 nginx）的许可证；插件包自己的许可证写在仓库的 LICENSE 里。
-  license: BSD-2-Clause
+  screenshots: [screenshots/gallery.jpg, screenshots/viewer.jpg]
+  author: { name: geraldpeng6 }
+  homepage: https://ente.com
+  # Ente（服务端 museum 和网页应用）的许可证；插件包自己的许可证在 LICENSE。
+  license: AGPL-3.0-only
   tags:
-    zh: [工具]
-    en: [Tools]
+    zh: [相册, 同步]
+    en: [Photos, Sync]
   about:
     zh: |
-      一个示例网页：登录以后，页面会向你问好。新建插件时可以照着改。
+      手机里的照片和视频以端到端加密的方式备份到自己家里：云吞这边只存加密后的数据，
+      密钥由你的 Ente 账号密码派生，服务器读不出内容。时间线、相册、搜索和分享都在网页里。
+
+      账号是 Ente 自己的（邮箱 + 密码 + 恢复密钥），第一次打开时自己注册。注册时邮箱请用
+      以 @example.org 结尾的地址（比如 you@example.org，它只是账号标识，不会真的收信），
+      验证码填 123456。密码和恢复密钥丢了照片就找不回来，请把恢复密钥抄下来。
+
+      有限制：公共相册链接打不开（插件只开放这一个网页入口），Ente 官方手机 App 连不上
+      这里的服务器（它不认云吞的登录），备份请在网页里做。
     en: |
-      An example page: once you are signed in, the page says hello. Copy it as a starting point for a new plugin.
-  release_notes: { zh: 名字和说明更新。, en: Product name and description update. }
+      Photos and videos are backed up end-to-end encrypted to your own server: Wonton only
+      stores encrypted data, keys are derived from your Ente account password, and the server
+      cannot read anything. Timeline, albums, search and sharing live in the web page.
+
+      The account is Ente's own (email + password + recovery key); register on first open.
+      Use an email ending in @example.org (e.g. you@example.org — it is only an identifier,
+      nothing is actually sent) and enter 123456 as the verification code. If you lose the
+      password or the recovery key, the photos are gone; write the recovery key down.
+
+      Limitations: public album links do not open (this plugin exposes a single web entry),
+      and the official Ente mobile app cannot reach this server (it does not speak Wonton
+      sign-in) — back up from the web page.
+  release_notes: { zh: "第一个版本：Ente Photos 网页应用 + museum + Postgres + MinIO。", en: "First release: Ente Photos web app with museum, Postgres and MinIO." }
   webui:
-    service: web
+    service: proxy
     port: 80
-    # 示例页回显网关注入的用户名，见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md#网关代登录sso-proxy。
-    sso: proxy
-    proxy:
-      headers:
-        Remote-User: "{user}"
-  # 能放到底栏的页面，见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md#底栏页面tabs。放不放由用户决定。
-  tabs:
-    - id: home
-      title: { zh: 主页, en: Home }
-      icon: tabs/home.svg
-      icon_selected: tabs/home-fill.svg
-      path: /
-      # 这个页面没做适配，用默认的 inset：页面夹在 App 的栏中间，不会被挡。
-      # 想让内容从栏下滚过，写 layout: edge-to-edge，并用 --wonton-inset-* 留出栏的位置。
+    sso: none
   permissions: []
-  # 上游 nginx 官方镜像，amd64 和 arm64 都有；上游没写最低内存，按本机空闲实测取整（实测约 24M，取 64M）。
+  # 上游对自托管的要求：最低 1 GB 内存、1 核（https://ente.com/help/self-hosting/installation/requirements）。
   requirements:
     arch: [amd64, arm64]
-    memory: 64M
+    memory: 1G
+  secrets:
+    db_username:
+      generate: { bytes: 8 }
+    db_password:
+      generate: { bytes: 32 }
+    minio_user:
+      generate: { bytes: 16 }
+    minio_password:
+      generate: { bytes: 32 }
+    museum_key:
+      generate: { bytes: 32, encoding: base64 }
+    museum_hash:
+      generate: { bytes: 64, encoding: base64 }
+    # museum 按 URL-safe base64 解 jwt.secret（main.go 的 b64.URLEncoding），核心的 base64 是标准表，
+    # 带 + 或 / 时解不开（约 3/4 的值带）。hex 全在 base64 字母表里、长度是 4 的倍数，解出来 48 字节。
+    # key.encryption / key.hash 用的是 StdEncoding，照旧用 base64。
+    jwt_secret:
+      generate: { bytes: 32 }
