@@ -6,10 +6,25 @@ on:
     branches: [main]
   # 手动入口：想合并前跑一遍冒烟时，从这里触发（冒烟作业只在 Dependabot 的 PR 和手动触发时跑）。
   workflow_dispatch:
+    inputs:
+      core-image:
+        description: 核心镜像（如 ghcr.io/geraldpeng6/wonton-core:sha-<完整 40 位提交号>，钉在某次合并上复测；留空用套件默认的 :main）
+        required: false
+        type: string
+        default: ''
+      upgrade-from:
+        description: 冒烟“升级保数据”的起点（提交或 tag，只在本次运行里打本地 tag，不推）；留空取最近的 tag
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   check:
-    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@ae9307f0ffdb1fc29a64782303a859b5c3330607
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@93f641ddee1c680981d5c47f5b31922f4e2b47fd
+    with:
+      # pull_request 和 push 触发时没有这个输入，为空，走套件默认。
+      core-image: ${{ inputs.core-image }}
+      upgrade-from: ${{ inputs.upgrade-from }}
