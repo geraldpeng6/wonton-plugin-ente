@@ -206,8 +206,8 @@ x-wonton:
   id: app.ente.ente
   version: 0.1.0
   kind: app
-  title: { en: Ente }
-  description: { zh: "端到端加密的相册，手机照片自动备份到自己家里", en: "End-to-end encrypted photo storage that backs up your phone to your own server" }
+  title: { zh: 加密相册（Ente）, en: Encrypted Photos (Ente) }
+  description: { zh: "像 Google 相册，但照片先加密再存进家里的服务器，连服务器自己都看不到内容：在网页里上传、按时间线翻、建相册。隐私最强，但要另注册 Ente 账号，备份只能在网页里做。", en: "Like Google Photos, but every photo is encrypted before it reaches your home server, so not even the server can see it: upload, browse by timeline and make albums in the browser. The most private option; it needs its own Ente account and backups happen in the browser." }
   icon: icon.png
   notices: [NOTICE]
   screenshots: [screenshots/gallery.jpg, screenshots/viewer.jpg]
@@ -220,8 +220,7 @@ x-wonton:
     en: [Photos, Sync]
   about:
     zh: |
-      手机里的照片和视频以端到端加密的方式备份到自己家里：云吞这边只存加密后的数据，
-      密钥由你的 Ente 账号密码派生，服务器读不出内容。时间线、相册、搜索和分享都在网页里。
+      照片和视频加密后备份到自己家里：家里的服务器只存加密后的数据，钥匙藏在你的 Ente 账号密码里，服务器读不出内容。时间线、相册、搜索和分享都在网页里。
 
       账号是 Ente 自己的（邮箱 + 密码 + 恢复密钥），第一次打开时自己注册。注册时邮箱请用
       以 @example.org 结尾的地址（比如 you@example.org，它只是账号标识，不会真的收信），
@@ -230,9 +229,7 @@ x-wonton:
       有限制：公共相册链接打不开（插件只开放这一个网页入口），Ente 官方手机 App 连不上
       这里的服务器（它不认云吞的登录），备份请在网页里做。
     en: |
-      Photos and videos are backed up end-to-end encrypted to your own server: Wonton only
-      stores encrypted data, keys are derived from your Ente account password, and the server
-      cannot read anything. Timeline, albums, search and sharing live in the web page.
+      Photos and videos are backed up to your home in encrypted form: your home server stores only encrypted data, and the key comes from your Ente password, so the server can't read anything. Timeline, albums, search and sharing are all in the browser.
 
       The account is Ente's own (email + password + recovery key); register on first open.
       Use an email ending in @example.org (e.g. you@example.org — it is only an identifier,
