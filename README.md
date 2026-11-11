@@ -55,7 +55,7 @@ Ente 的账号密码不只是登录凭据：主密钥用账号密码包裹，登
 | `web/default.conf` | nginx 入口的三段路由（网页 / API / 对象存储） |
 | `icon.png`、`screenshots/` | 商店图标和竖屏截图 |
 | `scripts/smoke-probes.sh` | 插件探针：真实页面、Ente 账号注册与管理员断言、升级/重装保数据。探测用官方 `ente` CLI 在插件网络里直连 museum，CLI 按发布 tag 从 GitHub 下载并按 `SHA256SUMS` 校验 |
-| `scripts/check.sh` 等 | 开发套件，用法见[开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md) |
+| `scripts/check.sh` 等 | 开发套件，用法见[开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md) |
 
 插件包是 `docker-compose.yml` 加上它引用的文件（`icon.png`、`NOTICE` 和 compose 里的 `configs`）。README、截图、脚本不在
 插件包里。
