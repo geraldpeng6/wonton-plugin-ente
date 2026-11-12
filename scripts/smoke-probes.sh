@@ -11,26 +11,12 @@
 # CLI 的数据目录（vault）放在状态目录旁边。探针在宿主机上，museum 的网络从外面到不了，
 # 所以命令放进插件网络里的一次性容器里跑，镜像取栈里 museum 在用的那个（本地已有，不额外拉）。
 #
-# 两套 harness：dev 套件（scripts/probes.sh）给 SMOKE_*，e2e（smoke.sh + plugins/ente.sh）
-# 给 E2E_*。下面把两套名字归一化；SMOKE_STATE 在 dev 是 .wonton 目录，在 e2e 是一个
-# 每次 run 被截空的文件，所以标记和缓存放它旁边的目录，并在标记里记实例名——实例对不上
-# （e2e 每次随机新实例、dev 换了栈）就整个重建，不拿旧实例的账号。
-
-if [[ -n "${E2E_INSTANCE:-}" && -z "${SMOKE_INSTANCE:-}" ]]; then
-	SMOKE_INSTANCE="$E2E_INSTANCE"
-	SMOKE_SLUG="${E2E_SLUG:-}"
-fi
-SMOKE_INSTANCE="${SMOKE_INSTANCE:-}"
-SMOKE_SLUG="${SMOKE_SLUG:-${SMOKE_PLUGIN_ID:-}}"
+# 冒烟套件在读探针前就备好 SMOKE_STATE（一个每次 run 被截空的标记文件）：标记和 CLI 缓存
+# 放它旁边的目录，并在标记里记实例名——实例对不上（换了栈）就整个重建，不拿旧实例的账号。
 SMOKE_NOTE="ente 账号与云吞身份独立（端到端加密，sso=none）；探测账号由官方 CLI 经 museum 注册并断言它是实例管理员"
-E2E_NOTE="$SMOKE_NOTE"
 
-state_dir() { # 状态旁边建一个自己的目录：SMOKE_STATE 是文件（e2e）时用 <路径>.ente
-	if [[ -d "${SMOKE_STATE:-}" ]]; then
-		printf '%s' "$SMOKE_STATE/ente"
-	else
-		printf '%s' "${SMOKE_STATE:-/tmp/ente-smoke}.ente"
-	fi
+state_dir() { # 标记文件旁边建一个自己的目录，装凭据和 CLI 缓存
+	printf '%s' "${SMOKE_STATE:-/tmp/ente-smoke}.ente"
 }
 ENTE_STATE="$(state_dir)"
 ENTE_PROBE_DIR="$ENTE_STATE/probe"
@@ -73,21 +59,17 @@ cli_ensure() { # 把 CLI 下载并校验好（缓存在 ENTE_CLI_DIR，挂进容
 	fi
 }
 
-cli_net() { # 插件网络名：从 museum 容器上读。slug/实例在调用时才取（e2e 在 source 钩子之后才注入）
+cli_net() { # 插件网络名：从 museum 容器上读
 	local slug instance
-	slug="${SMOKE_SLUG:-${E2E_SLUG:-${SMOKE_PLUGIN_ID:-}}}"
-	instance="${SMOKE_INSTANCE:-${E2E_INSTANCE:-}}"
+	slug="$SMOKE_SLUG" instance="$SMOKE_INSTANCE"
 	[[ -n "$slug" && -n "$instance" ]] ||
-		{ echo "拿不到插件 slug 或实例名（SMOKE_SLUG/E2E_SLUG、SMOKE_INSTANCE/E2E_INSTANCE 都没设）"; return 1; }
+		{ echo "拿不到插件 slug 或实例名（SMOKE_SLUG、SMOKE_INSTANCE 都没设）"; return 1; }
 	docker inspect -f '{{range $k, $_ := .NetworkSettings.Networks}}{{$k}}{{end}}' \
 		"wonton-$instance--$slug--museum" 2>/dev/null
 }
 
 cli_image() { # 跑 CLI 的镜像：直接用栈里已经在跑的那个（本地已有，不用再拉；entrypoint 会被 /cli/ente 盖掉）
-	local slug instance
-	slug="${SMOKE_SLUG:-${E2E_SLUG:-${SMOKE_PLUGIN_ID:-}}}"
-	instance="${SMOKE_INSTANCE:-${E2E_INSTANCE:-}}"
-	docker inspect -f '{{.Config.Image}}' "wonton-$instance--$slug--museum" 2>/dev/null
+	docker inspect -f '{{.Config.Image}}' "wonton-$SMOKE_INSTANCE--$SMOKE_SLUG--museum" 2>/dev/null
 }
 
 cli_run() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
@@ -100,7 +82,7 @@ cli_run() { # 在插件网络里跑一次 CLI（直连 museum，不走网关）
 	[[ ! -s "$ENTE_PROBE_DIR/vault-key" ]] || key=(-e "ENTE_CLI_VAULT_KEY=$(cat "$ENTE_PROBE_DIR/vault-key")")
 	# 插件网络里没有代理，容器外面的 http_proxy 会让 CLI 绕到不存在的回环地址上（502）。
 	# 用宿主自己的 uid/gid 跑：/probe 是宿主 700 的目录，同 uid 才读写得了；镜像自带什么 USER 都被覆盖。
-	# 别用 root：容器留下的 root 属主文件，宿主重建探测目录时 rm -rf 删不掉（e2e 第二轮就死在这）。
+	# 别用 root：容器留下的 root 属主文件，宿主用户重建探测目录时 rm -rf 删不掉。
 	docker run --rm -i --user "$(id -u):$(id -g)" --network "$net" \
 		-v "$ENTE_PROBE_DIR:/probe" -v "$ENTE_CLI_DIR:/cli:ro" \
 		-e ENTE_CLI_HOME=/probe/home "${key[@]}" \
@@ -134,7 +116,7 @@ marker_read() { # 读标记（INSTANCE、MARKER、EMAIL、PASSWORD），没有�
 		esac
 	done < "$ENTE_MARKER_FILE"
 	[[ -n "${INSTANCE:-}" && -n "${MARKER:-}" && -n "${EMAIL:-}" && -n "${PASSWORD:-}" ]] || return 1
-	# 实例对不上（e2e 每次随机新实例，dev 换了栈）就重建，别拿旧实例的账号
+	# 实例对不上（换了栈）就重建，别拿旧实例的账号
 	if [[ "$INSTANCE" != "$SMOKE_INSTANCE" ]]; then
 		rm -rf "$ENTE_STATE"
 		return 1
